@@ -11,6 +11,7 @@ class NetworkMonitor {
         this.maxLogs = 1000; // Maximum number of logs to keep
         this.currentLogFilter = 'all';
         this.emailService = new EmailService(); // Initialize email service
+        this.noSignupEmailService = new NoSignupEmailService(); // Initialize no-signup email service
         
         this.init();
     }
@@ -127,6 +128,15 @@ class NetworkMonitor {
         // Webhook configuration button
         document.getElementById('saveWebhookConfig').addEventListener('click', () => {
             this.saveWebhookConfig();
+        });
+
+        // No-signup email configuration buttons
+        document.getElementById('saveNoSignupConfig').addEventListener('click', () => {
+            this.saveNoSignupConfig();
+        });
+
+        document.getElementById('testNoSignupEmail').addEventListener('click', () => {
+            this.testNoSignupEmail();
         });
         
         // Logs Modal
@@ -951,11 +961,6 @@ class NetworkMonitor {
     }
     
     async sendAlert(host, message) {
-        if (!this.emailSettings || !this.emailSettings.is_enabled) {
-            this.addLog('debug', '이메일 알림 비활성화됨', { host: host.name, message });
-            return;
-        }
-        
         // Prevent spam alerts - only send if last alert was more than 15 minutes ago
         const lastAlertTime = this.lastAlertTimes.get(host.id);
         const now = Date.now();
@@ -965,25 +970,61 @@ class NetworkMonitor {
         }
         
         try {
-            this.addLog('info', '이메일 알림 발송 시작', { 
+            this.addLog('info', '알림 발송 시작', { 
                 host: host.name, 
                 ip: host.ip_address, 
                 message 
             });
             
-            // Use the enhanced email service
-            const result = await this.emailService.sendAlert(this.emailSettings, host, message);
-            
-            if (result.success) {
-                this.addLog('info', '이메일 알림 발송 성공', result);
-                this.showNotification(`${host.name}에 대한 알림이 발송되었습니다.`, 'info');
+            let alertSent = false;
+            const results = [];
+
+            // Method 1: Try no-signup email service first (easier to use)
+            try {
+                const mailtoEmail = localStorage.getItem('mailto_email') || 'admin@company.com';
+                const noSignupResult = await this.noSignupEmailService.sendAlert(host, message, mailtoEmail);
+                results.push(noSignupResult);
+                
+                if (noSignupResult.success) {
+                    alertSent = true;
+                    this.addLog('info', '회원가입 없는 이메일 서비스로 알림 발송 성공', noSignupResult);
+                }
+            } catch (noSignupError) {
+                this.addLog('warning', '회원가입 없는 이메일 서비스 실패', noSignupError.message);
+                results.push({ success: false, method: 'no-signup', error: noSignupError.message });
+            }
+
+            // Method 2: Try EmailJS if configured and no-signup failed
+            if (!alertSent && this.emailSettings && this.emailSettings.is_enabled) {
+                try {
+                    const emailResult = await this.emailService.sendAlert(this.emailSettings, host, message);
+                    results.push(emailResult);
+                    
+                    if (emailResult.success) {
+                        alertSent = true;
+                        this.addLog('info', 'EmailJS로 알림 발송 성공', emailResult);
+                    }
+                } catch (emailError) {
+                    this.addLog('warning', 'EmailJS 알림 발송 실패', emailError.message);
+                    results.push({ success: false, method: 'emailjs', error: emailError.message });
+                }
+            }
+
+            // Show result to user
+            if (alertSent) {
+                this.showNotification(`${host.name}에 대한 알림이 발송되었습니다.`, 'success');
                 this.lastAlertTimes.set(host.id, now);
+                
+                // Log successful methods
+                const successfulMethods = results.filter(r => r.success).map(r => r.method || 'unknown');
+                this.addLog('info', `알림 발송 성공 (${successfulMethods.join(', ')})`);
             } else {
-                this.addLog('warning', '이메일 알림 발송 실패', result);
+                this.showNotification(`${host.name} 알림 발송에 실패했습니다. 설정을 확인해주세요.`, 'warning');
+                this.addLog('warning', '모든 알림 방법 실패', { results });
             }
             
         } catch (error) {
-            this.addLog('error', '이메일 알림 발송 중 오류', { 
+            this.addLog('error', '알림 발송 중 전체 오류', { 
                 host: host.name, 
                 error: error.message 
             });
@@ -1213,9 +1254,112 @@ class NetworkMonitor {
                 this.emailService.webhookUrl = webhookUrl;
             }
 
+            // Load no-signup email configurations
+            this.loadNoSignupConfigurations();
+
             this.addLog('debug', '이메일 설정 로드 완료');
         } catch (error) {
             this.addLog('error', '이메일 설정 로드 실패', error.message);
+        }
+    }
+
+    // Load no-signup email configurations
+    loadNoSignupConfigurations() {
+        try {
+            const noSignupSettings = localStorage.getItem('no_signup_email_settings');
+            if (noSignupSettings) {
+                const settings = JSON.parse(noSignupSettings);
+                
+                // Load Formspree settings
+                if (settings.formspree && settings.formspree.enabled) {
+                    document.getElementById('enableFormspree').checked = true;
+                    // Extract email from endpoint
+                    const endpoint = settings.formspree.endpoint;
+                    if (endpoint) {
+                        const emailMatch = endpoint.match(/f\/(.+)/);
+                        if (emailMatch) {
+                            const email = emailMatch[1].replace('-at-', '@').replace('-dot-', '.');
+                            document.getElementById('formspreeEmail').value = email;
+                        }
+                    }
+                }
+
+                // Load mailto settings (always enabled)
+                const mailtoEmail = localStorage.getItem('mailto_email');
+                if (mailtoEmail) {
+                    document.getElementById('mailtoEmail').value = mailtoEmail;
+                }
+            }
+
+            this.addLog('debug', '회원가입 없는 이메일 설정 로드 완료');
+        } catch (error) {
+            this.addLog('error', '회원가입 없는 이메일 설정 로드 실패', error.message);
+        }
+    }
+
+    // Save no-signup email configurations
+    saveNoSignupConfig() {
+        try {
+            const formspreeEnabled = document.getElementById('enableFormspree').checked;
+            const formspreeEmail = document.getElementById('formspreeEmail').value.trim();
+            const mailtoEmail = document.getElementById('mailtoEmail').value.trim();
+
+            // Configure Formspree if enabled
+            if (formspreeEnabled) {
+                if (!formspreeEmail || !this.isValidEmail(formspreeEmail)) {
+                    this.showNotification('올바른 Formspree 이메일 주소를 입력해주세요.', 'error');
+                    return;
+                }
+                this.noSignupEmailService.configureFormspree(formspreeEmail);
+            }
+
+            // Save mailto email
+            if (mailtoEmail && this.isValidEmail(mailtoEmail)) {
+                localStorage.setItem('mailto_email', mailtoEmail);
+            }
+
+            this.addLog('info', '회원가입 없는 이메일 설정 저장 완료', {
+                formspree: formspreeEnabled,
+                mailto: !!mailtoEmail
+            });
+            
+            this.showNotification('회원가입 없는 이메일 설정이 저장되었습니다!', 'success');
+
+        } catch (error) {
+            this.addLog('error', '회원가입 없는 이메일 설정 저장 실패', error.message);
+            this.showNotification(`설정 저장 실패: ${error.message}`, 'error');
+        }
+    }
+
+    // Test no-signup email
+    async testNoSignupEmail() {
+        try {
+            this.addLog('info', '회원가입 없는 이메일 테스트 시작');
+            this.showLoading();
+
+            const mailtoEmail = document.getElementById('mailtoEmail').value.trim() || 'admin@company.com';
+
+            // Create test host info
+            const testHost = {
+                name: 'Test Server',
+                ip_address: '192.168.1.100',
+                description: '회원가입 없는 이메일 테스트용 서버'
+            };
+
+            const result = await this.noSignupEmailService.sendAlert(testHost, '회원가입 없는 이메일 테스트', mailtoEmail);
+            
+            this.addLog('info', '회원가입 없는 이메일 테스트 성공', result);
+            this.showNotification('테스트가 성공했습니다! 사용 가능한 방법으로 알림이 발송되었습니다.', 'success');
+
+            // Show available methods
+            const methods = this.noSignupEmailService.getAvailableMethods();
+            this.addLog('info', `사용 가능한 방법: ${methods.join(', ')}`);
+
+        } catch (error) {
+            this.addLog('error', '회원가입 없는 이메일 테스트 실패', error.message);
+            this.showNotification(`테스트 실패: ${error.message}`, 'error');
+        } finally {
+            this.hideLoading();
         }
     }
     
