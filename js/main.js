@@ -30,6 +30,9 @@ class NetworkMonitor {
             await this.loadEmailSettings();
             this.addLog('debug', '이메일 설정 로드 완료');
             
+            // Load EmailJS and webhook configurations
+            this.loadEmailConfigurations();
+            
             // 모니터링 시작 및 대시보드 업데이트
             this.startMonitoring();
             this.addLog('info', '모니터링 시작됨');
@@ -110,6 +113,20 @@ class NetworkMonitor {
         // Reset data button
         document.getElementById('resetDataBtn').addEventListener('click', () => {
             this.resetAllData();
+        });
+
+        // EmailJS configuration buttons
+        document.getElementById('saveEmailjsConfig').addEventListener('click', () => {
+            this.saveEmailjsConfig();
+        });
+
+        document.getElementById('testEmailjsConfig').addEventListener('click', () => {
+            this.testEmailjsConfig();
+        });
+
+        // Webhook configuration button
+        document.getElementById('saveWebhookConfig').addEventListener('click', () => {
+            this.saveWebhookConfig();
         });
         
         // Logs Modal
@@ -1084,6 +1101,122 @@ class NetworkMonitor {
     // Placeholder for edit functionality
     editHost(hostId) {
         this.showNotification('편집 기능은 개발 예정입니다.', 'info');
+    }
+
+    // EmailJS configuration methods
+    saveEmailjsConfig() {
+        try {
+            const serviceId = document.getElementById('emailjsServiceId').value.trim();
+            const templateId = document.getElementById('emailjsTemplateId').value.trim();
+            const publicKey = document.getElementById('emailjsPublicKey').value.trim();
+
+            if (!serviceId || !templateId || !publicKey) {
+                this.showNotification('모든 EmailJS 설정 필드를 입력해주세요.', 'error');
+                return;
+            }
+
+            // Configure EmailJS in email service
+            const success = this.emailService.configureEmailJS(serviceId, templateId, publicKey);
+            
+            if (success) {
+                this.addLog('info', 'EmailJS 설정 저장 완료', { serviceId, templateId });
+                this.showNotification('EmailJS 설정이 저장되었습니다. 이제 실제 이메일을 발송할 수 있습니다!', 'success');
+            } else {
+                this.addLog('error', 'EmailJS 설정 저장 실패');
+                this.showNotification('EmailJS 설정 저장에 실패했습니다.', 'error');
+            }
+        } catch (error) {
+            this.addLog('error', 'EmailJS 설정 저장 중 오류', error.message);
+            this.showNotification(`EmailJS 설정 오류: ${error.message}`, 'error');
+        }
+    }
+
+    async testEmailjsConfig() {
+        try {
+            this.addLog('info', 'EmailJS 테스트 이메일 발송 시작');
+            this.showLoading();
+
+            if (!this.emailService.isEmailJSConfigured()) {
+                throw new Error('EmailJS 설정을 먼저 저장해주세요.');
+            }
+
+            // Create test email settings from current form
+            const emailSettings = {
+                to_emails: ['test@example.com'], // Will be overridden by EmailJS template
+                from_email: 'monitor@company.com'
+            };
+
+            // Create test host info
+            const testHost = {
+                name: 'Test Server',
+                ip_address: '192.168.1.100',
+                description: 'EmailJS 테스트용 서버'
+            };
+
+            const result = await this.emailService.sendAlertEmail(emailSettings, testHost, 'EmailJS 연결 테스트');
+            
+            this.addLog('info', 'EmailJS 테스트 이메일 발송 성공', result);
+            this.showNotification('테스트 이메일이 성공적으로 발송되었습니다!', 'success');
+
+        } catch (error) {
+            this.addLog('error', 'EmailJS 테스트 실패', error.message);
+            this.showNotification(`테스트 실패: ${error.message}`, 'error');
+        } finally {
+            this.hideLoading();
+        }
+    }
+
+    saveWebhookConfig() {
+        try {
+            const webhookUrl = document.getElementById('webhookUrl').value.trim();
+
+            if (webhookUrl && !webhookUrl.startsWith('http')) {
+                this.showNotification('올바른 웹훅 URL을 입력해주세요.', 'error');
+                return;
+            }
+
+            // Configure webhook in email service
+            this.emailService.webhookUrl = webhookUrl;
+            
+            // Save to localStorage
+            localStorage.setItem('webhook_url', webhookUrl);
+
+            if (webhookUrl) {
+                this.addLog('info', '웹훅 URL 설정 완료', { webhookUrl });
+                this.showNotification('웹훅 설정이 저장되었습니다.', 'success');
+            } else {
+                this.addLog('info', '웹훅 설정 제거됨');
+                this.showNotification('웹훅 설정이 제거되었습니다.', 'info');
+            }
+        } catch (error) {
+            this.addLog('error', '웹훅 설정 저장 중 오류', error.message);
+            this.showNotification(`웹훅 설정 오류: ${error.message}`, 'error');
+        }
+    }
+
+    // Load EmailJS and webhook configurations
+    loadEmailConfigurations() {
+        try {
+            // Load EmailJS config
+            const emailjsConfig = localStorage.getItem('emailjs_config');
+            if (emailjsConfig) {
+                const config = JSON.parse(emailjsConfig);
+                document.getElementById('emailjsServiceId').value = config.serviceId || '';
+                document.getElementById('emailjsTemplateId').value = config.templateId || '';
+                document.getElementById('emailjsPublicKey').value = config.publicKey || '';
+            }
+
+            // Load webhook config
+            const webhookUrl = localStorage.getItem('webhook_url');
+            if (webhookUrl) {
+                document.getElementById('webhookUrl').value = webhookUrl;
+                this.emailService.webhookUrl = webhookUrl;
+            }
+
+            this.addLog('debug', '이메일 설정 로드 완료');
+        } catch (error) {
+            this.addLog('error', '이메일 설정 로드 실패', error.message);
+        }
     }
     
     // Debug function to reset all data
