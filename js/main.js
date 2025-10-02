@@ -107,6 +107,11 @@ class NetworkMonitor {
             this.requestNotificationPermission();
         });
         
+        // Reset data button
+        document.getElementById('resetDataBtn').addEventListener('click', () => {
+            this.resetAllData();
+        });
+        
         // Logs Modal
         document.getElementById('logsBtn').addEventListener('click', () => {
             this.showLogsModal();
@@ -344,6 +349,16 @@ class NetworkMonitor {
             
             this.addLog('debug', '호스트 데이터 수집 완료', hostData);
             
+            // Debug: Check if all required elements exist
+            const debugInfo = {
+                hostName: hostData.name,
+                hostIP: hostData.ip_address,
+                isValidIP: this.isValidIP(hostData.ip_address),
+                monitorInterval: hostData.monitor_interval,
+                emailAlerts: hostData.email_alerts
+            };
+            this.addLog('debug', '호스트 데이터 검증', debugInfo);
+            
             // Validate required fields
             if (!hostData.name) {
                 this.addLog('warning', '호스트 추가 실패: 호스트명 누락');
@@ -361,10 +376,7 @@ class NetworkMonitor {
                 throw new Error('유효하지 않은 IP 주소입니다.');
             }
             
-            // Check if IP already exists
-            if (this.hosts.some(host => host.ip_address === hostData.ip_address)) {
-                throw new Error('이미 등록된 IP 주소입니다.');
-            }
+            // IP 중복 체크는 Mock API에서 처리됨
             
             const response = await fetch('tables/hosts', {
                 method: 'POST',
@@ -375,7 +387,16 @@ class NetworkMonitor {
             });
             
             if (!response.ok) {
-                throw new Error('호스트 추가에 실패했습니다.');
+                let errorMessage = '호스트 추가에 실패했습니다.';
+                try {
+                    const errorData = await response.json();
+                    if (errorData.error) {
+                        errorMessage = errorData.error;
+                    }
+                } catch (parseError) {
+                    console.warn('Error response parsing failed:', parseError);
+                }
+                throw new Error(errorMessage);
             }
             
             const newHost = await response.json();
@@ -517,18 +538,25 @@ class NetworkMonitor {
                 let errorDetails = null;
                 
                 try {
-                    const errorData = await response.json();
+                    // Clone response to avoid "body stream already read" error
+                    const responseClone = response.clone();
+                    const errorData = await responseClone.json();
                     this.addLog('error', 'API 오류 응답 (JSON)', errorData);
                     if (errorData.error) {
                         errorMessage += ` (${errorData.error})`;
                         errorDetails = errorData;
                     }
                 } catch (parseError) {
-                    const errorText = await response.text();
-                    this.addLog('error', 'API 오류 응답 (Text)', { text: errorText, parseError: parseError.message });
-                    if (errorText) {
-                        errorMessage += ` (${errorText})`;
-                        errorDetails = { text: errorText };
+                    try {
+                        const errorText = await response.text();
+                        this.addLog('error', 'API 오류 응답 (Text)', { text: errorText, parseError: parseError.message });
+                        if (errorText) {
+                            errorMessage += ` (${errorText})`;
+                            errorDetails = { text: errorText };
+                        }
+                    } catch (textError) {
+                        this.addLog('error', 'Response 읽기 실패', { parseError: parseError.message, textError: textError.message });
+                        errorDetails = { parseError: parseError.message, textError: textError.message };
                     }
                 }
                 
@@ -1175,6 +1203,21 @@ class NetworkMonitor {
     // Placeholder for edit functionality
     editHost(hostId) {
         this.showNotification('편집 기능은 개발 예정입니다.', 'info');
+    }
+    
+    // Debug function to reset all data
+    resetAllData() {
+        if (confirm('모든 데이터를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) {
+            if (window.mockAPI) {
+                window.mockAPI.clearAllData();
+                this.hosts = [];
+                this.emailSettings = null;
+                this.renderHostsTable();
+                this.updateDashboard();
+                this.showNotification('모든 데이터가 초기화되었습니다.', 'info');
+                this.addLog('info', '데이터 초기화 완료');
+            }
+        }
     }
     
     // ===============================
