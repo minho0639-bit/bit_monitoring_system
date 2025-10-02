@@ -169,11 +169,17 @@ class NetworkMonitor {
     
     async loadHosts() {
         try {
-            const response = await fetch('tables/hosts');
-            const data = await response.json();
-            this.hosts = data.data || [];
+            this.addLog('debug', '호스트 데이터 로딩 시작');
+            if (window.storageService) {
+                this.hosts = window.storageService.getHosts();
+                this.addLog('info', `호스트 ${this.hosts.length}개 로드됨`);
+            } else {
+                this.addLog('warning', 'Storage Service가 초기화되지 않음');
+                this.hosts = [];
+            }
             this.renderHostsTable();
         } catch (error) {
+            this.addLog('error', '호스트 로딩 실패', error.message);
             console.error('Error loading hosts:', error);
             this.hosts = [];
         }
@@ -181,25 +187,20 @@ class NetworkMonitor {
     
     async loadEmailSettings() {
         try {
-            console.log('Loading email settings...');
-            const response = await fetch('tables/email_settings');
-            
-            if (!response.ok) {
-                console.warn('Failed to load email settings:', response.status);
-                return;
-            }
-            
-            const data = await response.json();
-            console.log('Email settings response:', data);
-            
-            if (data.data && data.data.length > 0) {
-                this.emailSettings = data.data[0];
-                console.log('Email settings loaded:', this.emailSettings);
+            this.addLog('debug', '이메일 설정 로딩 시작');
+            if (window.storageService) {
+                this.emailSettings = window.storageService.getEmailSettings();
+                if (this.emailSettings) {
+                    this.addLog('info', '이메일 설정 로드됨');
+                } else {
+                    this.addLog('info', '저장된 이메일 설정 없음');
+                }
             } else {
-                console.log('No email settings found');
+                this.addLog('warning', 'Storage Service가 초기화되지 않음');
                 this.emailSettings = null;
             }
         } catch (error) {
+            this.addLog('error', '이메일 설정 로딩 실패', error.message);
             console.error('Error loading email settings:', error);
             this.emailSettings = null;
         }
@@ -349,16 +350,6 @@ class NetworkMonitor {
             
             this.addLog('debug', '호스트 데이터 수집 완료', hostData);
             
-            // Debug: Check if all required elements exist
-            const debugInfo = {
-                hostName: hostData.name,
-                hostIP: hostData.ip_address,
-                isValidIP: this.isValidIP(hostData.ip_address),
-                monitorInterval: hostData.monitor_interval,
-                emailAlerts: hostData.email_alerts
-            };
-            this.addLog('debug', '호스트 데이터 검증', debugInfo);
-            
             // Validate required fields
             if (!hostData.name) {
                 this.addLog('warning', '호스트 추가 실패: 호스트명 누락');
@@ -376,30 +367,12 @@ class NetworkMonitor {
                 throw new Error('유효하지 않은 IP 주소입니다.');
             }
             
-            // IP 중복 체크는 Mock API에서 처리됨
-            
-            const response = await fetch('tables/hosts', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(hostData)
-            });
-            
-            if (!response.ok) {
-                let errorMessage = '호스트 추가에 실패했습니다.';
-                try {
-                    const errorData = await response.json();
-                    if (errorData.error) {
-                        errorMessage = errorData.error;
-                    }
-                } catch (parseError) {
-                    console.warn('Error response parsing failed:', parseError);
-                }
-                throw new Error(errorMessage);
+            // Use storage service directly
+            if (!window.storageService) {
+                throw new Error('Storage Service가 초기화되지 않았습니다.');
             }
             
-            const newHost = await response.json();
+            const newHost = window.storageService.addHost(hostData);
             this.hosts.push(newHost);
             
             this.addLog('info', `새 호스트 추가 성공`, { 
@@ -506,71 +479,12 @@ class NetworkMonitor {
             
             this.addLog('debug', '이메일 설정 데이터 준비 완료', settingsData);
             
-            let response;
-            let url, method;
-            
-            if (this.emailSettings && this.emailSettings.id) {
-                // Update existing settings
-                url = `tables/email_settings/${this.emailSettings.id}`;
-                method = 'PUT';
-                this.addLog('info', `기존 이메일 설정 업데이트 시도 (ID: ${this.emailSettings.id})`);
-            } else {
-                // Create new settings
-                url = 'tables/email_settings';
-                method = 'POST';
-                this.addLog('info', '새 이메일 설정 생성 시도');
+            // Use storage service directly
+            if (!window.storageService) {
+                throw new Error('Storage Service가 초기화되지 않았습니다.');
             }
             
-            this.addLog('debug', `API 요청`, { method, url, dataSize: JSON.stringify(settingsData).length });
-            
-            response = await fetch(url, {
-                method: method,
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(settingsData)
-            });
-            
-            this.addLog('debug', `API 응답`, { status: response.status, statusText: response.statusText });
-            
-            if (!response.ok) {
-                let errorMessage = '설정 저장에 실패했습니다.';
-                let errorDetails = null;
-                
-                try {
-                    // Clone response to avoid "body stream already read" error
-                    const responseClone = response.clone();
-                    const errorData = await responseClone.json();
-                    this.addLog('error', 'API 오류 응답 (JSON)', errorData);
-                    if (errorData.error) {
-                        errorMessage += ` (${errorData.error})`;
-                        errorDetails = errorData;
-                    }
-                } catch (parseError) {
-                    try {
-                        const errorText = await response.text();
-                        this.addLog('error', 'API 오류 응답 (Text)', { text: errorText, parseError: parseError.message });
-                        if (errorText) {
-                            errorMessage += ` (${errorText})`;
-                            errorDetails = { text: errorText };
-                        }
-                    } catch (textError) {
-                        this.addLog('error', 'Response 읽기 실패', { parseError: parseError.message, textError: textError.message });
-                        errorDetails = { parseError: parseError.message, textError: textError.message };
-                    }
-                }
-                
-                this.addLog('error', '이메일 설정 저장 실패', { 
-                    status: response.status, 
-                    statusText: response.statusText,
-                    errorMessage: errorMessage,
-                    errorDetails: errorDetails
-                });
-                
-                throw new Error(errorMessage);
-            }
-            
-            const savedSettings = await response.json();
+            const savedSettings = window.storageService.saveEmailSettings(settingsData);
             this.addLog('info', '이메일 설정 저장 성공', { settingsId: savedSettings.id });
             
             this.emailSettings = savedSettings;
@@ -584,15 +498,7 @@ class NetworkMonitor {
                 name: error.name
             });
             
-            // 사용자 친화적 오류 메시지 제공
-            let userMessage = error.message;
-            if (error.message.includes('fetch')) {
-                userMessage = '네트워크 연결을 확인해주세요.';
-            } else if (error.message.includes('JSON')) {
-                userMessage = '서버 응답 처리 중 오류가 발생했습니다.';
-            }
-            
-            this.showNotification(userMessage, 'error');
+            this.showNotification(error.message, 'error');
         } finally {
             this.hideLoading();
         }
@@ -710,13 +616,11 @@ class NetworkMonitor {
         try {
             this.showLoading();
             
-            const response = await fetch(`tables/hosts/${hostId}`, {
-                method: 'DELETE'
-            });
-            
-            if (!response.ok) {
-                throw new Error('호스트 삭제에 실패했습니다.');
+            if (!window.storageService) {
+                throw new Error('Storage Service가 초기화되지 않았습니다.');
             }
+            
+            window.storageService.deleteHost(hostId);
             
             // Stop monitoring for this host
             if (this.monitoringIntervals.has(hostId)) {
@@ -730,9 +634,11 @@ class NetworkMonitor {
             this.renderHostsTable();
             this.updateDashboard();
             this.showNotification('호스트가 삭제되었습니다.', 'success');
+            this.addLog('info', '호스트 삭제 완료', { hostId });
             
         } catch (error) {
             console.error('Error deleting host:', error);
+            this.addLog('error', '호스트 삭제 실패', error.message);
             this.showNotification(error.message, 'error');
         } finally {
             this.hideLoading();
@@ -746,21 +652,14 @@ class NetworkMonitor {
             
             const newActiveState = !host.is_active;
             
-            const response = await fetch(`tables/hosts/${hostId}`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    is_active: newActiveState
-                })
-            });
-            
-            if (!response.ok) {
-                throw new Error('호스트 상태 변경에 실패했습니다.');
+            if (!window.storageService) {
+                throw new Error('Storage Service가 초기화되지 않았습니다.');
             }
             
-            const updatedHost = await response.json();
+            const updatedHost = window.storageService.updateHost(hostId, {
+                is_active: newActiveState
+            });
+            
             const hostIndex = this.hosts.findIndex(h => h.id === hostId);
             this.hosts[hostIndex] = updatedHost;
             
@@ -778,9 +677,11 @@ class NetworkMonitor {
             
             const status = newActiveState ? '활성화' : '비활성화';
             this.showNotification(`${host.name} 모니터링이 ${status}되었습니다.`, 'info');
+            this.addLog('info', `호스트 모니터링 ${status}`, { hostName: host.name, hostId });
             
         } catch (error) {
             console.error('Error toggling host monitoring:', error);
+            this.addLog('error', '호스트 모니터링 상태 변경 실패', error.message);
             this.showNotification(error.message, 'error');
         }
     }
@@ -919,17 +820,9 @@ class NetworkMonitor {
                 response_time: result.success ? responseTime : null
             };
             
-            // Update in database
-            const response = await fetch(`tables/hosts/${hostId}`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(updateData)
-            });
-            
-            if (response.ok) {
-                const updatedHost = await response.json();
+            // Update in storage
+            if (window.storageService) {
+                const updatedHost = window.storageService.updateHost(hostId, updateData);
                 const hostIndex = this.hosts.findIndex(h => h.id === hostId);
                 this.hosts[hostIndex] = updatedHost;
                 
@@ -956,16 +849,8 @@ class NetworkMonitor {
             };
             
             try {
-                const response = await fetch(`tables/hosts/${hostId}`, {
-                    method: 'PATCH',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(updateData)
-                });
-                
-                if (response.ok) {
-                    const updatedHost = await response.json();
+                if (window.storageService) {
+                    const updatedHost = window.storageService.updateHost(hostId, updateData);
                     const hostIndex = this.hosts.findIndex(h => h.id === hostId);
                     this.hosts[hostIndex] = updatedHost;
                     
@@ -1040,13 +925,9 @@ class NetworkMonitor {
                 error_message: errorMessage || null
             };
             
-            await fetch('tables/monitoring_logs', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(logData)
-            });
+            if (window.storageService) {
+                window.storageService.addMonitoringLog(logData);
+            }
         } catch (error) {
             console.error('Error logging monitoring result:', error);
         }
@@ -1208,10 +1089,17 @@ class NetworkMonitor {
     // Debug function to reset all data
     resetAllData() {
         if (confirm('모든 데이터를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) {
-            if (window.mockAPI) {
-                window.mockAPI.clearAllData();
+            if (window.storageService) {
+                window.storageService.clearAllData();
                 this.hosts = [];
                 this.emailSettings = null;
+                
+                // Clear all monitoring intervals
+                this.monitoringIntervals.forEach((interval) => {
+                    clearInterval(interval);
+                });
+                this.monitoringIntervals.clear();
+                
                 this.renderHostsTable();
                 this.updateDashboard();
                 this.showNotification('모든 데이터가 초기화되었습니다.', 'info');
