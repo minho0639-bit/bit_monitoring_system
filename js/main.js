@@ -10,8 +10,22 @@ class NetworkMonitor {
         this.logs = []; // System logs
         this.maxLogs = 1000; // Maximum number of logs to keep
         this.currentLogFilter = 'all';
-        this.emailService = new EmailService(); // Initialize email service
-        this.noSignupEmailService = new NoSignupEmailService(); // Initialize no-signup email service
+        // Initialize email services safely
+        try {
+            this.emailService = new EmailService();
+            console.log('✅ EmailService 초기화 성공');
+        } catch (error) {
+            console.error('❌ EmailService 초기화 실패:', error);
+            this.emailService = null;
+        }
+        
+        try {
+            this.noSignupEmailService = new NoSignupEmailService();
+            console.log('✅ NoSignupEmailService 초기화 성공');
+        } catch (error) {
+            console.error('❌ NoSignupEmailService 초기화 실패:', error);
+            this.noSignupEmailService = null;
+        }
         
         this.init();
     }
@@ -980,22 +994,26 @@ class NetworkMonitor {
             const results = [];
 
             // Method 1: Try no-signup email service first (easier to use)
-            try {
-                const mailtoEmail = localStorage.getItem('mailto_email') || 'admin@company.com';
-                const noSignupResult = await this.noSignupEmailService.sendAlert(host, message, mailtoEmail);
-                results.push(noSignupResult);
-                
-                if (noSignupResult.success) {
-                    alertSent = true;
-                    this.addLog('info', '회원가입 없는 이메일 서비스로 알림 발송 성공', noSignupResult);
+            if (this.noSignupEmailService) {
+                try {
+                    const mailtoEmail = localStorage.getItem('mailto_email') || 'admin@company.com';
+                    const noSignupResult = await this.noSignupEmailService.sendAlert(host, message, mailtoEmail);
+                    results.push(noSignupResult);
+                    
+                    if (noSignupResult.success) {
+                        alertSent = true;
+                        this.addLog('info', '회원가입 없는 이메일 서비스로 알림 발송 성공', noSignupResult);
+                    }
+                } catch (noSignupError) {
+                    this.addLog('warning', '회원가입 없는 이메일 서비스 실패', noSignupError.message);
+                    results.push({ success: false, method: 'no-signup', error: noSignupError.message });
                 }
-            } catch (noSignupError) {
-                this.addLog('warning', '회원가입 없는 이메일 서비스 실패', noSignupError.message);
-                results.push({ success: false, method: 'no-signup', error: noSignupError.message });
+            } else {
+                this.addLog('warning', '회원가입 없는 이메일 서비스가 초기화되지 않음');
             }
 
             // Method 2: Try EmailJS if configured and no-signup failed
-            if (!alertSent && this.emailSettings && this.emailSettings.is_enabled) {
+            if (!alertSent && this.emailSettings && this.emailSettings.is_enabled && this.emailService) {
                 try {
                     const emailResult = await this.emailService.sendAlert(this.emailSettings, host, message);
                     results.push(emailResult);
@@ -1008,6 +1026,8 @@ class NetworkMonitor {
                     this.addLog('warning', 'EmailJS 알림 발송 실패', emailError.message);
                     results.push({ success: false, method: 'emailjs', error: emailError.message });
                 }
+            } else if (!this.emailService) {
+                this.addLog('warning', 'EmailService가 초기화되지 않음');
             }
 
             // Show result to user
@@ -1157,6 +1177,9 @@ class NetworkMonitor {
             }
 
             // Configure EmailJS in email service
+            if (!this.emailService) {
+                throw new Error('EmailService가 초기화되지 않았습니다.');
+            }
             const success = this.emailService.configureEmailJS(serviceId, templateId, publicKey);
             
             if (success) {
@@ -1177,6 +1200,10 @@ class NetworkMonitor {
             this.addLog('info', 'EmailJS 테스트 이메일 발송 시작');
             this.showLoading();
 
+            if (!this.emailService) {
+                throw new Error('EmailService가 초기화되지 않았습니다.');
+            }
+            
             if (!this.emailService.isEmailJSConfigured()) {
                 throw new Error('EmailJS 설정을 먼저 저장해주세요.');
             }
@@ -1217,7 +1244,12 @@ class NetworkMonitor {
             }
 
             // Configure webhook in email service
-            this.emailService.webhookUrl = webhookUrl;
+            if (this.emailService) {
+                this.emailService.webhookUrl = webhookUrl;
+            }
+            if (this.noSignupEmailService) {
+                this.noSignupEmailService.configureWebhook(webhookUrl);
+            }
             
             // Save to localStorage
             localStorage.setItem('webhook_url', webhookUrl);
@@ -1251,7 +1283,13 @@ class NetworkMonitor {
             const webhookUrl = localStorage.getItem('webhook_url');
             if (webhookUrl) {
                 document.getElementById('webhookUrl').value = webhookUrl;
-                this.emailService.webhookUrl = webhookUrl;
+                if (this.emailService) {
+                    this.emailService.webhookUrl = webhookUrl;
+                }
+                if (this.noSignupEmailService) {
+                    this.noSignupEmailService.services.webhook.url = webhookUrl;
+                    this.noSignupEmailService.services.webhook.enabled = true;
+                }
             }
 
             // Load no-signup email configurations
@@ -1310,7 +1348,11 @@ class NetworkMonitor {
                     this.showNotification('올바른 Formspree 이메일 주소를 입력해주세요.', 'error');
                     return;
                 }
-                this.noSignupEmailService.configureFormspree(formspreeEmail);
+                if (this.noSignupEmailService) {
+                    this.noSignupEmailService.configureFormspree(formspreeEmail);
+                } else {
+                    throw new Error('NoSignupEmailService가 초기화되지 않았습니다.');
+                }
             }
 
             // Save mailto email
@@ -1346,6 +1388,10 @@ class NetworkMonitor {
                 description: '회원가입 없는 이메일 테스트용 서버'
             };
 
+            if (!this.noSignupEmailService) {
+                throw new Error('NoSignupEmailService가 초기화되지 않았습니다.');
+            }
+            
             const result = await this.noSignupEmailService.sendAlert(testHost, '회원가입 없는 이메일 테스트', mailtoEmail);
             
             this.addLog('info', '회원가입 없는 이메일 테스트 성공', result);

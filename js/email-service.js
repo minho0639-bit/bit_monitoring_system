@@ -419,7 +419,6 @@ Network Monitoring System
             }
         };
     }
-}
 
     // Send email via webhook (integrated into main EmailService)
     async sendEmailViaWebhook(hostInfo, alertMessage) {
@@ -472,6 +471,7 @@ Network Monitoring System
             throw new Error(`웹훅 발송 실패: ${error.message}`);
         }
     }
+}
 
 // Webhook-based email service (alternative approach)
 class WebhookEmailService {
