@@ -131,7 +131,7 @@ class EmailService {
         }
     }
     
-    // Alternative method using Fetch API to backend service
+    // Send email via backend SMTP service
     async sendEmailViaBackend(emailSettings, hostInfo, alertMessage) {
         try {
             const emailData = {
@@ -145,8 +145,7 @@ class EmailService {
                 body: this.generateEmailBody(hostInfo, alertMessage)
             };
             
-            // This would require a backend email service
-            const response = await fetch('/api/send-email', {
+            const response = await fetch('/api/email/settings', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -155,14 +154,15 @@ class EmailService {
             });
             
             if (!response.ok) {
-                throw new Error(`Email service returned ${response.status}`);
+                const errorData = await response.json();
+                throw new Error(`Email service error: ${errorData.error || response.statusText}`);
             }
             
             const result = await response.json();
-            return { success: true, result };
+            return { success: true, result, method: 'backend_smtp' };
             
         } catch (error) {
-            console.error('Backend email service failed:', error);
+            console.error('Backend SMTP service failed:', error);
             throw error;
         }
     }
@@ -288,7 +288,18 @@ Network Monitoring System
                 }
             }
 
-            // Method 2: Try webhook if configured
+            // Method 2: Try backend SMTP service
+            try {
+                const smtpResult = await this.sendEmailViaBackend(emailSettings, hostInfo, alertMessage);
+                results.push(smtpResult);
+                hasSuccessfulSend = true;
+                console.log('✅ 백엔드 SMTP 발송 성공');
+            } catch (smtpError) {
+                console.warn('❌ 백엔드 SMTP 발송 실패:', smtpError.message);
+                results.push({ success: false, method: 'backend_smtp', error: smtpError.message });
+            }
+
+            // Method 3: Try webhook if configured
             if (this.webhookUrl) {
                 try {
                     const webhookResult = await this.sendEmailViaWebhook(hostInfo, alertMessage);
@@ -356,6 +367,8 @@ Network Monitoring System
         if (this.isEmailJSConfigured()) {
             methods.push('EmailJS');
         }
+        
+        methods.push('Backend SMTP'); // Always available if server is running
         
         if (this.webhookUrl) {
             methods.push('Webhook');
