@@ -780,11 +780,39 @@ app.post('/api/hosts', (req, res) => {
 // Update host
 app.put('/api/hosts/:id', (req, res) => {
     const { id } = req.params;
-    const { name, ip_address, description, is_active } = req.body;
+    const { name, ip_address, description, is_active, email_alerts } = req.body;
 
-    db.run(
-        "UPDATE hosts SET name = ?, ip_address = ?, description = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [name, ip_address, description || '', is_active !== undefined ? is_active : 1, id],
+    // Build dynamic update query
+    const updates = [];
+    const values = [];
+    
+    if (name !== undefined) {
+        updates.push('name = ?');
+        values.push(name);
+    }
+    if (ip_address !== undefined) {
+        updates.push('ip_address = ?');
+        values.push(ip_address);
+    }
+    if (description !== undefined) {
+        updates.push('description = ?');
+        values.push(description);
+    }
+    if (is_active !== undefined) {
+        updates.push('is_active = ?');
+        values.push(is_active);
+    }
+    if (email_alerts !== undefined) {
+        updates.push('email_alerts = ?');
+        values.push(email_alerts ? 1 : 0);
+    }
+    
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    values.push(id);
+
+    const query = `UPDATE hosts SET ${updates.join(', ')} WHERE id = ?`;
+
+    db.run(query, values,
         function(err) {
             if (err) {
                 res.status(500).json({ error: err.message });
@@ -857,7 +885,7 @@ app.get('/api/hosts/:id/ping-results', (req, res) => {
 
 // Configure email settings
 app.post('/api/email/settings', async (req, res) => {
-    const { smtp_server, smtp_port, username, password, from_email, to_emails } = req.body;
+    const { smtp_server, smtp_port, username, password, from_email, to_emails, skip_test } = req.body;
 
     if (!smtp_server || !smtp_port || !username || !password || !from_email || !to_emails) {
         return res.status(400).json({ error: 'All email fields are required' });
@@ -873,8 +901,10 @@ app.post('/api/email/settings', async (req, res) => {
     };
 
     try {
-        // Test email configuration
-        await testEmailConfiguration(emailSettings);
+        // Test email configuration (unless skipped)
+        if (!skip_test) {
+            await testEmailConfiguration(emailSettings);
+        }
 
         // Save to database
         db.run(
