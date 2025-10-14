@@ -257,10 +257,22 @@ class NetworkMonitor {
                         const pingResults = await response.json();
                         if (pingResults.length > 0) {
                             const latestResult = pingResults[0];
-                            host.last_status = latestResult.is_online ? 'online' : 'offline';
+                            const isOnline = latestResult.is_online;
+                            const status = isOnline ? 'online' : 'offline';
+                            
+                            // Debug logging
+                            console.log(`Host ${host.name} (${host.ip_address}):`, {
+                                is_online: isOnline,
+                                status: status,
+                                response_time: latestResult.response_time,
+                                timestamp: latestResult.timestamp
+                            });
+                            
+                            host.last_status = status;
                             host.last_check = new Date(latestResult.timestamp).getTime();
                             host.response_time = latestResult.response_time;
                         } else {
+                            console.log(`No ping results for host ${host.name} (${host.ip_address})`);
                             host.last_status = 'unknown';
                             host.last_check = null;
                             host.response_time = null;
@@ -930,28 +942,35 @@ class NetworkMonitor {
             
             const startTime = Date.now();
             
-            // Since we can't actually ping from browser, we'll simulate with HTTP request
-            // In a real implementation, you'd need a backend service for actual ping
-            const result = await this.simulatePing(host.ip_address);
+            // Use backend API for actual ping
+            const response = await fetch(`/api/ping/${hostId}`, {
+                method: 'POST'
+            });
             
-            const responseTime = Date.now() - startTime;
+            if (response.ok) {
+                const pingResult = await response.json();
+                const newStatus = pingResult.is_online ? 'online' : 'offline';
+                
+                // Update host status
+                host.last_status = newStatus;
+                host.last_check = new Date(pingResult.timestamp).getTime();
+                host.response_time = pingResult.response_time;
+                
+                const updateData = {
+                    last_status: newStatus,
+                    last_check: host.last_check,
+                    response_time: pingResult.response_time
+                };
             
-            // Update host status
-            const newStatus = result.success ? 'online' : 'offline';
-            const updateData = {
-                last_status: newStatus,
-                last_check: Date.now(),
-                response_time: result.success ? responseTime : null
-            };
-            
-            // Update in storage
-            if (window.storageService) {
-                const updatedHost = window.storageService.updateHost(hostId, updateData);
-                const hostIndex = this.hosts.findIndex(h => h.id === hostId);
-                this.hosts[hostIndex] = updatedHost;
+                // Update in storage
+                if (window.storageService) {
+                    const updatedHost = window.storageService.updateHost(hostId, updateData);
+                    const hostIndex = this.hosts.findIndex(h => h.id === hostId);
+                    this.hosts[hostIndex] = updatedHost;
+                }
                 
                 // Log the monitoring result
-                await this.logMonitoringResult(hostId, newStatus, responseTime, result.error);
+                await this.logMonitoringResult(hostId, newStatus, pingResult.response_time);
                 
                 // Check for alerts
                 if (newStatus === 'offline' && host.email_alerts) {
@@ -960,33 +979,39 @@ class NetworkMonitor {
                 
                 this.renderHostsTable();
                 this.updateDashboard();
+            } else {
+                throw new Error(`Ping API error: ${response.status}`);
             }
             
         } catch (error) {
             console.error('Error checking host status:', error);
             
             // Update status to offline on error
-            const updateData = {
-                last_status: 'offline',
-                last_check: Date.now(),
-                response_time: null
-            };
+            host.last_status = 'offline';
+            host.last_check = Date.now();
+            host.response_time = null;
             
             try {
                 if (window.storageService) {
+                    const updateData = {
+                        last_status: 'offline',
+                        last_check: Date.now(),
+                        response_time: null
+                    };
+                    
                     const updatedHost = window.storageService.updateHost(hostId, updateData);
                     const hostIndex = this.hosts.findIndex(h => h.id === hostId);
                     this.hosts[hostIndex] = updatedHost;
-                    
-                    await this.logMonitoringResult(hostId, 'offline', null, error.message);
-                    
-                    if (host.email_alerts) {
-                        await this.sendAlert(host, `Host check failed: ${error.message}`);
-                    }
-                    
-                    this.renderHostsTable();
-                    this.updateDashboard();
                 }
+                
+                await this.logMonitoringResult(hostId, 'offline', null, error.message);
+                
+                if (host.email_alerts) {
+                    await this.sendAlert(host, `Host check failed: ${error.message}`);
+                }
+                
+                this.renderHostsTable();
+                this.updateDashboard();
             } catch (updateError) {
                 console.error('Error updating host after failed check:', updateError);
             }
