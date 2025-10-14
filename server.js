@@ -473,6 +473,65 @@ function isValidIP(ip) {
     return ipRegex.test(ip);
 }
 
+// Check if we should send an offline alert (avoid spam)
+async function shouldSendOfflineAlert(hostId) {
+    return new Promise((resolve, reject) => {
+        // Check if host is still active
+        db.get("SELECT is_active FROM hosts WHERE id = ?", [hostId], (err, host) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            
+            if (!host || !host.is_active) {
+                // Host is deleted or inactive, don't send alert
+                resolve(false);
+                return;
+            }
+            
+            // Check if we sent an alert recently (within last 5 minutes)
+            const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+            
+            db.get(
+                "SELECT COUNT(*) as count FROM alerts WHERE host_id = ? AND alert_type = 'network_alert' AND is_sent = 1 AND sent_at > ?",
+                [hostId, fiveMinutesAgo],
+                (err, result) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    
+                    // Send alert only if no alert was sent in the last 5 minutes
+                    resolve(result.count === 0);
+                }
+            );
+        });
+    });
+}
+
+// Mark that an alert was sent for a host
+async function markAlertSent(hostId) {
+    return new Promise((resolve, reject) => {
+        db.run(
+            "INSERT INTO alerts (host_id, alert_type, message, is_sent, sent_at) VALUES (?, ?, ?, ?, ?)",
+            [hostId, 'network_alert', 'Host offline alert sent', 1, new Date().toISOString()],
+            function(err) {
+                if (err) reject(err);
+                else resolve(this.lastID);
+            }
+        );
+    });
+}
+
+// Reset alert status when host comes back online
+async function resetAlertStatus(hostId) {
+    return new Promise((resolve, reject) => {
+        // We could add a recovery alert here if needed
+        // For now, just resolve (no action needed)
+        resolve();
+    });
+}
+
 // Monitor all hosts
 async function monitorHosts() {
     try {
@@ -494,16 +553,29 @@ async function monitorHosts() {
 
             // Check if host went offline and send alert
             if (!pingResult.is_online) {
-                const alertMessage = `호스트 ${host.name} (${host.ip_address})이(가) 오프라인 상태입니다.`;
+                // Check if we should send an alert (avoid spam)
+                const shouldSendAlert = await shouldSendOfflineAlert(host.id);
                 
-                try {
-                    await sendAlertEmail(host, alertMessage);
-                    console.log(`Alert sent for offline host: ${host.name}`);
-                } catch (emailError) {
-                    console.error(`Failed to send alert for ${host.name}:`, emailError);
+                if (shouldSendAlert) {
+                    const alertMessage = `호스트 ${host.name} (${host.ip_address})이(가) 오프라인 상태입니다.`;
+                    
+                    try {
+                        await sendAlertEmail(host, alertMessage);
+                        console.log(`Alert sent for offline host: ${host.name}`);
+                        
+                        // Mark that we sent an alert for this host
+                        await markAlertSent(host.id);
+                    } catch (emailError) {
+                        console.error(`Failed to send alert for ${host.name}:`, emailError);
+                    }
+                } else {
+                    console.log(`Skipping alert for ${host.name} - already sent recently`);
                 }
             } else {
                 console.log(`Host ${host.name} is online (${pingResult.response_time}ms)`);
+                
+                // If host came back online, reset alert status
+                await resetAlertStatus(host.id);
             }
         }
     } catch (error) {
@@ -557,6 +629,17 @@ app.put('/api/hosts/:id', (req, res) => {
             if (err) {
                 res.status(500).json({ error: err.message });
             } else {
+                // If host is being deactivated, clean up alerts
+                if (is_active === false || is_active === 0) {
+                    db.run("DELETE FROM alerts WHERE host_id = ?", [id], (err) => {
+                        if (err) {
+                            console.error('Error cleaning up alerts for deactivated host:', err);
+                        } else {
+                            console.log(`Alerts cleaned up for deactivated host ${id}`);
+                        }
+                    });
+                }
+                
                 res.json({ success: true, changes: this.changes });
             }
         }
@@ -567,12 +650,30 @@ app.put('/api/hosts/:id', (req, res) => {
 app.delete('/api/hosts/:id', (req, res) => {
     const { id } = req.params;
 
+    // First, deactivate the host
     db.run("UPDATE hosts SET is_active = 0 WHERE id = ?", [id], function(err) {
         if (err) {
             res.status(500).json({ error: err.message });
-        } else {
-            res.json({ success: true, changes: this.changes });
+            return;
         }
+
+        // Clean up related data
+        // 1. Delete ping results (optional - you might want to keep them for history)
+        db.run("DELETE FROM ping_results WHERE host_id = ?", [id], (err) => {
+            if (err) {
+                console.error('Error deleting ping results:', err);
+            }
+        });
+
+        // 2. Delete alerts
+        db.run("DELETE FROM alerts WHERE host_id = ?", [id], (err) => {
+            if (err) {
+                console.error('Error deleting alerts:', err);
+            }
+        });
+
+        console.log(`Host ${id} deleted and related data cleaned up`);
+        res.json({ success: true, changes: this.changes });
     });
 });
 
@@ -691,6 +792,32 @@ app.get('/api/alerts', (req, res) => {
             res.status(500).json({ error: err.message });
         } else {
             res.json(rows);
+        }
+    });
+});
+
+// Clear alerts for a specific host
+app.delete('/api/hosts/:id/alerts', (req, res) => {
+    const { id } = req.params;
+    
+    db.run("DELETE FROM alerts WHERE host_id = ?", [id], function(err) {
+        if (err) {
+            res.status(500).json({ error: err.message });
+        } else {
+            console.log(`Cleared ${this.changes} alerts for host ${id}`);
+            res.json({ success: true, cleared: this.changes });
+        }
+    });
+});
+
+// Clear all alerts
+app.delete('/api/alerts', (req, res) => {
+    db.run("DELETE FROM alerts", function(err) {
+        if (err) {
+            res.status(500).json({ error: err.message });
+        } else {
+            console.log(`Cleared all ${this.changes} alerts`);
+            res.json({ success: true, cleared: this.changes });
         }
     });
 });
