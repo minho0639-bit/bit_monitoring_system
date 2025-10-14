@@ -179,6 +179,14 @@ async function sendAlertEmail(hostInfo, alertMessage) {
     }
 
     try {
+        // Debug: Log host information
+        console.log('Sending alert email for host:', {
+            id: hostInfo.id,
+            name: hostInfo.name,
+            ip_address: hostInfo.ip_address,
+            description: hostInfo.description
+        });
+
         const emailContent = {
             from: emailSettings.from_email,
             to: emailSettings.to_emails.join(', '),
@@ -213,6 +221,14 @@ async function sendAlertEmail(hostInfo, alertMessage) {
 
 // Generate email text content
 function generateEmailText(hostInfo, alertMessage) {
+    // Debug: Log host information in email template
+    console.log('Generating email text for host:', {
+        id: hostInfo.id,
+        name: hostInfo.name,
+        ip_address: hostInfo.ip_address,
+        description: hostInfo.description
+    });
+
     return `
 네트워크 모니터링 알림
 
@@ -236,6 +252,14 @@ Network Monitoring System
 
 // Generate email HTML content
 function generateEmailHTML(hostInfo, alertMessage) {
+    // Debug: Log host information in email template
+    console.log('Generating email HTML for host:', {
+        id: hostInfo.id,
+        name: hostInfo.name,
+        ip_address: hostInfo.ip_address,
+        description: hostInfo.description
+    });
+
     return `
     <!DOCTYPE html>
     <html>
