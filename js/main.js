@@ -250,8 +250,10 @@ class NetworkMonitor {
     
     async loadPingResults() {
         try {
+            console.log('=== loadPingResults 시작 ===');
             for (const host of this.hosts) {
                 try {
+                    console.log(`호스트 ${host.name} (${host.ip_address}) ping 결과 로딩 중...`);
                     const response = await fetch(`/api/hosts/${host.id}/ping-results?limit=1`);
                     if (response.ok) {
                         const pingResults = await response.json();
@@ -261,30 +263,36 @@ class NetworkMonitor {
                             const status = isOnline ? 'online' : 'offline';
                             
                             // Debug logging
-                            console.log(`Host ${host.name} (${host.ip_address}):`, {
+                            console.log(`호스트 ${host.name} (${host.ip_address}) ping 결과:`, {
                                 is_online: isOnline,
                                 status: status,
                                 response_time: latestResult.response_time,
-                                timestamp: latestResult.timestamp
+                                timestamp: latestResult.timestamp,
+                                이전_상태: host.last_status
                             });
                             
                             host.last_status = status;
                             host.last_check = new Date(latestResult.timestamp).getTime();
                             host.response_time = latestResult.response_time;
+                            
+                            console.log(`호스트 ${host.name} 상태 업데이트됨: ${host.last_status}`);
                         } else {
-                            console.log(`No ping results for host ${host.name} (${host.ip_address})`);
+                            console.log(`호스트 ${host.name} (${host.ip_address})에 ping 결과 없음`);
                             host.last_status = 'unknown';
                             host.last_check = null;
                             host.response_time = null;
                         }
+                    } else {
+                        console.error(`호스트 ${host.name} ping 결과 로딩 실패: ${response.status}`);
                     }
                 } catch (error) {
-                    console.error(`Failed to load ping results for host ${host.id}:`, error);
+                    console.error(`호스트 ${host.id} ping 결과 로딩 중 오류:`, error);
                     host.last_status = 'unknown';
                     host.last_check = null;
                     host.response_time = null;
                 }
             }
+            console.log('=== loadPingResults 완료 ===');
             this.addLog('info', 'Ping 결과 로드 완료');
         } catch (error) {
             this.addLog('error', 'Ping 결과 로딩 실패', error.message);
@@ -933,7 +941,12 @@ class NetworkMonitor {
     
     async checkHostStatus(hostId) {
         const host = this.hosts.find(h => h.id === hostId);
-        if (!host || !host.is_active) return;
+        if (!host || !host.is_active) {
+            console.log(`호스트 ${hostId}가 비활성화되어 있거나 찾을 수 없음`);
+            return;
+        }
+        
+        console.log(`=== checkHostStatus 시작: ${host.name} (${host.ip_address}) ===`);
         
         try {
             // Update UI to show checking status
@@ -943,6 +956,7 @@ class NetworkMonitor {
             const startTime = Date.now();
             
             // Use backend API for actual ping
+            console.log(`호스트 ${host.name}에 대해 백엔드 API ping 요청 중...`);
             const response = await fetch(`/api/ping/${hostId}`, {
                 method: 'POST'
             });
@@ -950,6 +964,14 @@ class NetworkMonitor {
             if (response.ok) {
                 const pingResult = await response.json();
                 const newStatus = pingResult.is_online ? 'online' : 'offline';
+                
+                console.log(`호스트 ${host.name} ping 결과:`, {
+                    is_online: pingResult.is_online,
+                    newStatus: newStatus,
+                    response_time: pingResult.response_time,
+                    timestamp: pingResult.timestamp,
+                    이전_상태: host.last_status
+                });
                 
                 // Update host status
                 host.last_status = newStatus;
@@ -977,14 +999,16 @@ class NetworkMonitor {
                     await this.sendAlert(host, 'Host is offline');
                 }
                 
+                console.log(`호스트 ${host.name} 상태 업데이트 완료: ${host.last_status}`);
                 this.renderHostsTable();
                 this.updateDashboard();
             } else {
+                console.error(`호스트 ${host.name} ping API 오류: ${response.status}`);
                 throw new Error(`Ping API error: ${response.status}`);
             }
             
         } catch (error) {
-            console.error('Error checking host status:', error);
+            console.error(`호스트 ${host.name} 상태 확인 중 오류:`, error);
             
             // Update status to offline on error
             host.last_status = 'offline';
@@ -1010,12 +1034,15 @@ class NetworkMonitor {
                     await this.sendAlert(host, `Host check failed: ${error.message}`);
                 }
                 
+                console.log(`호스트 ${host.name} 오류로 인해 오프라인으로 설정됨`);
                 this.renderHostsTable();
                 this.updateDashboard();
             } catch (updateError) {
-                console.error('Error updating host after failed check:', updateError);
+                console.error('호스트 업데이트 중 오류:', updateError);
             }
         }
+        
+        console.log(`=== checkHostStatus 완료: ${host.name} ===`);
     }
     
     async simulatePing(ipAddress) {
